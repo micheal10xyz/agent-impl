@@ -78,8 +78,6 @@ Final Answer: 20
 ### 工具列表
 {{tools}}
 
-用户指令：{{query}}
-
 """
 
 model_client = openai.AsyncOpenAI(api_key='sk-e259258120804170b6809473a2c7819f', base_url='https://dashscope.aliyuncs.com/compatible-mode/v1')
@@ -87,6 +85,7 @@ model_name = 'qwen-plus'
 
 
 async def gradio_func(message, history):
+    print(f"history: {history}")
     transport = StreamableHttpTransport(url='http://127.0.0.1:8000/mcp')
     mcp_client = Client(transport)
     async with mcp_client:
@@ -94,44 +93,43 @@ async def gradio_func(message, history):
         tool_json_array = [tool.model_dump(exclude_none=True) for tool in tools]
         # print(f'tools: \n{tool_json_array}')
         prompt = system_prompt.replace("{{tools}}", json.dumps(tool_json_array))
-        prompt = prompt.replace("{{query}}", message)
+        messages = [
+            {
+                "role": "system",
+                "content": prompt
+            }
+        ]
+        # 添加历史对话
+        messages += history
+        messages.append({
+            "role": "user",
+            "content": message
+        })
         
         answer = ""
-
         max_turns = 5
         for i in range(max_turns):
-            messages = [
-                {
-                    "role": "system",
-                    "content": prompt
-                }
-            ]
             response = await model_client.chat.completions.create(
                 model=model_name,
                 messages=messages,
                 stream=True
             )
-
-            full_content = ""
+            model_output = ""
             if len(answer) > 0:
                 answer += "\n"
             async for chunk in response:
                 if chunk.choices and chunk.choices[0].delta.content:
                     content_chunk = chunk.choices[0].delta.content
-                    full_content += content_chunk
+                    model_output += content_chunk
                     answer += content_chunk
                     yield answer
 
-
             # model_output = response.choices[0].message.content
-            model_output = full_content
             print(f'turn_{i}: model output: {model_output}')
             final_answer_pattern = r"Final Answer:\s*(.*)"
             match = re.search(final_answer_pattern, model_output, re.DOTALL)
             if match:
                 final_answer = match.group(1)
-                answer += f"\n最终结果：{final_answer}"
-                yield answer
                 break
 
             pattern = r"Action:\s*(\{.*\})"
@@ -142,10 +140,14 @@ async def gradio_func(message, history):
                 tool_result = await mcp_client.call_tool(action_json['tool_name'], action_json['arguments'])
                 print('tool structed result: ', tool_result.structured_content)
                 observation = tool_result.structured_content['result']
-                print('observation: ', observation)
                 answer += f"\nObservation：{observation}"
                 yield answer
-                prompt += "\n" + model_output + "\n" + "Observation: {observation}"
+                model_output += f"\nObservation：{observation}"
+            
+            messages.append({
+                "role": "assistant",
+                "content": model_output 
+            })
                 
 
 
